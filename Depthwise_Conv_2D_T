@@ -1,0 +1,68 @@
+import tensorflow as tf
+
+class Depthwise_Conv2D_Transpose(tf.keras.layers.Layer):
+    def __init__(self, filters,kernel_size,strides,padding='same',use_bias=False,kernel_initializer=None,name="",**kwargs):
+        super(Depthwise_Conv2D_Transpose, self).__init__(**kwargs)
+        self.kernel_size = kernel_size
+        self.strides = strides[0]
+        self.padding = padding
+        self.use_bias = use_bias
+        self.kernel_init = kernel_initializer
+        self.lambdas =[]
+        self.filters = filters
+        self.input_image_shape = 0
+        self.nm = name
+        
+    def deconv_length(self,dim_size, stride_size, kernel_size, padding, output_padding=None, dilation=1):
+
+        assert padding in {'same', 'valid', 'full'}
+        if dim_size is None:
+            return None
+
+        # Get the dilated kernel size
+        kernel_size = kernel_size + (kernel_size - 1) * (dilation - 1)
+
+        # Infer length if output padding is None, else compute the exact length
+        if output_padding is None:
+            if padding == 'valid':
+                dim_size = dim_size * stride_size + max(kernel_size - stride_size, 0)
+            elif padding == 'full':
+                dim_size = dim_size * stride_size - (stride_size + kernel_size - 2)
+            elif padding == 'same':
+                dim_size = dim_size * stride_size
+        else:
+            if padding == 'same':
+                pad = kernel_size // 2
+            elif padding == 'valid':
+                pad = 0
+            elif padding == 'full':
+                pad = kernel_size - 1
+
+            dim_size = ((dim_size - 1) * stride_size + kernel_size - 2 * pad + output_padding)
+
+        return dim_size
+
+    def build(self, input_shape):
+        
+        my_list = tf.TensorArray(tf.float32, size=self.filters)
+        for i in tf.range(input_shape[-1]):
+            var = self.add_weight(initializer=tf.keras.initializers.deserialize(self.kernel_init),shape=(self.kernel_size,self.kernel_size,1,1), trainable=True)
+            my_list = my_list.write(i,var)
+        self.lambdas = my_list.stack()
+        
+        self.input_image_shape = input_shape[1]
+        
+        #self.lambdas = tf.stack(self.lambdas,axis = 0)
+        super(Depthwise_Conv2D_Transpose, self).build(input_shape)
+    @tf.function
+    def call(self, inputs):
+        output_shape = [tf.shape(inputs)[0]]+[self.deconv_length(self.input_image_shape,self.strides,self.kernel_size,self.padding)]*2
+        inputs_channel_wise =   tf.expand_dims(tf.transpose(inputs,[3,0,1,2]),axis = -1)  #tf.split(inputs,self.filters, -1)
+        channel_wise_conv = tf.vectorized_map(lambda x:tf.nn.conv2d_transpose(x[0], filters=x[1], 
+                                                                              output_shape=output_shape+[1], 
+                                                                              strides=self.strides, 
+                                                                              padding=self.padding.upper()),(inputs_channel_wise,self.lambdas)#, fn_output_signature=tf.float32
+                                             )
+        
+        channel_wise_conv = tf.reshape(tf.transpose(tf.squeeze(channel_wise_conv,axis = -1),[0,2,3,1]),output_shape+[self.filters])
+        return channel_wise_conv  
